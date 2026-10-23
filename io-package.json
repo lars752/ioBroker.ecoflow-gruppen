@@ -1,0 +1,94 @@
+{
+  "common": {
+    "name": "ecoflow-gruppen",
+    "version": "0.1.0",
+    "news": {
+      "0.1.0": {
+        "en": "Initial release: group Ecoflow devices by serial number, mirror setpoint and output power, group sums, write-back of setpoints",
+        "de": "Erstveröffentlichung: Ecoflow-Geräte per Seriennummer gruppieren, Soll- und Ausgangsleistung spiegeln, Gruppensummen, Weitergabe von Sollwerten"
+      }
+    },
+    "titleLang": {
+      "en": "Ecoflow groups",
+      "de": "Ecoflow Gruppen"
+    },
+    "desc": {
+      "en": "Assigns Ecoflow devices to groups by serial number, mirrors setpoint and output power and provides per-group total power",
+      "de": "Ordnet Ecoflow-Geräte per Seriennummer Gruppen zu, spiegelt Soll- und Ausgangsleistung und stellt pro Gruppe die Gesamtleistung bereit"
+    },
+    "authors": [
+      "Lars"
+    ],
+    "keywords": [
+      "ecoflow",
+      "group",
+      "inverter",
+      "power"
+    ],
+    "license": "MIT",
+    "platform": "Javascript/Node.js",
+    "main": "main.js",
+    "icon": "ecoflow-gruppen.png",
+    "enabled": true,
+    "extIcon": "https://raw.githubusercontent.com/lars752/ioBroker.ecoflow-gruppen/main/admin/ecoflow-gruppen.png",
+    "readme": "https://github.com/lars752/ioBroker.ecoflow-gruppen/blob/main/README.md",
+    "loglevel": "info",
+    "mode": "daemon",
+    "type": "energy",
+    "compact": false,
+    "connectionType": "local",
+    "dataSource": "push",
+    "messagebox": true,
+    "supportedMessages": {
+      "custom": true
+    },
+    "adminUI": {
+      "config": "json"
+    },
+    "dependencies": [
+      {
+        "js-controller": ">=5.0.19"
+      }
+    ],
+    "globalDependencies": [
+      {
+        "admin": ">=6.12.2"
+      }
+    ]
+  },
+  "native": {
+    "sourceAdapters": "ecoflow-mqtt.0",
+    "staleTimeoutSec": 0,
+    "pruneOnStart": true,
+    "powerScale": 1,
+    "outputScale": 1,
+    "maxPowerW": 800,
+    "logWrites": false,
+    "devices": [],
+    "configJson": ""
+  },
+  "objects": [],
+  "instanceObjects": [
+    {
+      "_id": "info",
+      "type": "channel",
+      "common": {
+        "name": "Information"
+      },
+      "native": {}
+    },
+    {
+      "_id": "info.connection",
+      "type": "state",
+      "common": {
+        "role": "indicator.connected",
+        "name": "Mindestens ein Gerät liefert aktuelle Daten",
+        "type": "boolean",
+        "read": true,
+        "write": false,
+        "def": false
+      },
+      "native": {}
+    }
+  ]
+}
