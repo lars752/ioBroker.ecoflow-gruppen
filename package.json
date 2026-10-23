@@ -1,0 +1,42 @@
+{
+  "name": "iobroker.ecoflow-gruppen",
+  "version": "0.1.0",
+  "description": "Ordnet Ecoflow-Geräte anhand ihrer Seriennummer Gruppen zu, spiegelt Soll- und Ausgangsleistung und bildet pro Gruppe die Summe",
+  "author": "Lars",
+  "license": "MIT",
+  "homepage": "https://github.com/lars752/ioBroker.ecoflow-gruppen",
+  "keywords": [
+    "ioBroker",
+    "ecoflow",
+    "powerstream",
+    "gruppen",
+    "inverter",
+    "power",
+    "energy"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lars752/ioBroker.ecoflow-gruppen.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@iobroker/adapter-core": "^3.2.3"
+  },
+  "main": "main.js",
+  "files": [
+    "admin/",
+    "lib/",
+    "main.js",
+    "io-package.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/test.js"
+  },
+  "bugs": {
+    "url": "https://github.com/lars752/ioBroker.ecoflow-gruppen/issues"
+  },
+  "readmeFilename": "README.md"
+}
