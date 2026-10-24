@@ -1,6 +1,6 @@
 {
   "name": "iobroker.ecoflow-gruppen",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Ordnet Ecoflow-Geräte anhand ihrer Seriennummer Gruppen zu, spiegelt Soll- und Ausgangsleistung und bildet pro Gruppe die Summe",
   "author": "Lars",
   "license": "MIT",
