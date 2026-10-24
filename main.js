@@ -55,7 +55,7 @@ class EcoflowGruppen extends utils.Adapter {
     }
 
     /** Abonnement-Muster je Gerät und Quell-Instanz: <adapter>.<seriennummer>.* */
-    patterns(cfg) {
+    sourcePatterns(cfg) {
         const out = [];
         for (const a of cfg.adapters) {
             for (const d of cfg.devices) for (const s of new Set([d.serial, d.up])) out.push(`${a}.${s}.*`);
@@ -91,7 +91,7 @@ class EcoflowGruppen extends utils.Adapter {
         });
 
         for (const rel of this.core.targets.keys()) this.subscribeStates(rel);
-        const pats = this.patterns(cfg);
+        const pats = this.sourcePatterns(cfg);
         for (const p of pats) this.subscribeForeignStates(p);
 
         let count = 0;
