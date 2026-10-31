@@ -1,42 +1,45 @@
 {
-  "name": "iobroker.ecoflow-gruppen",
+  "name": "iobroker.ecoflow-ps-ble",
   "version": "1.0.0",
-  "description": "Ordnet Ecoflow-Geräte anhand ihrer Seriennummer Gruppen zu, spiegelt Soll- und Ausgangsleistung und bildet pro Gruppe die Summe",
-  "author": "Lars",
-  "license": "MIT",
-  "homepage": "https://github.com/lars752/ioBroker.ecoflow-gruppen",
+  "description": "Lokale, cloudfreie Anbindung des EcoFlow PowerStream (HW51) per Bluetooth LE",
+  "author": {
+    "name": "lars752"
+  },
+  "homepage": "https://github.com/lars752/ioBroker.ecoflow-ps-ble",
+  "license": "SEE LICENSE IN LICENSE",
   "keywords": [
     "ioBroker",
-    "ecoflow",
-    "powerstream",
-    "gruppen",
-    "inverter",
-    "power",
-    "energy"
+    "EcoFlow",
+    "PowerStream",
+    "BLE",
+    "Bluetooth",
+    "Nulleinspeisung"
   ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/lars752/ioBroker.ecoflow-gruppen.git"
-  },
-  "engines": {
-    "node": ">=18"
-  },
-  "dependencies": {
-    "@iobroker/adapter-core": "^3.2.3"
-  },
   "main": "main.js",
   "files": [
     "admin/",
     "lib/",
     "main.js",
     "io-package.json",
-    "LICENSE"
+    "LICENSE",
+    "README.md"
   ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@abandonware/noble": "^1.9.2-26",
+    "@iobroker/adapter-core": "^3.2.3",
+    "@stoprocent/noble": "^2.0.0"
+  },
   "scripts": {
-    "test": "node test/test.js"
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lars752/ioBroker.ecoflow-ps-ble.git"
   },
   "bugs": {
-    "url": "https://github.com/lars752/ioBroker.ecoflow-gruppen/issues"
-  },
-  "readmeFilename": "README.md"
+    "url": "https://github.com/lars752/ioBroker.ecoflow-ps-ble/issues"
+  }
 }

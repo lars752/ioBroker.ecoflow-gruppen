@@ -1,167 +1,432 @@
 'use strict';
+/*
+ * ioBroker.ecoflow-ps-ble
+ * Lokale, cloudfreie Anbindung des EcoFlow PowerStream (HW51) per Bluetooth LE.
+ */
 const utils = require('@iobroker/adapter-core');
-const { normalizeConfig, buildModel, mergeSerials, serialsFromIds } = require('./lib/model');
-const { EcoflowCore } = require('./lib/core');
-const configio = require('./lib/configio');
+const { BleManager, listAdapters } = require('./lib/ble');
+const { PowerStreamDevice } = require('./lib/device');
+const { SENSORS, HB_CHANNEL } = require('./lib/sensors');
+const { fetchUserId, LoginError } = require('./lib/login');
 
-class EcoflowGruppen extends utils.Adapter {
-    constructor(options) {
-        super({ ...options, name: 'ecoflow-gruppen' });
-        this.cache = new Map();
-        this.queue = Promise.resolve();
-        this.core = null;
+const ID_RE = /^[A-Za-z0-9_-]+$/;
+const MAC_RE = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+
+class EcoflowPsBle extends utils.Adapter {
+    /** @param {Partial<utils.AdapterOptions>} [options] */
+    constructor(options = {}) {
+        super({ ...options, name: 'ecoflow-ps-ble' });
+        /** @type {Map<string, PowerStreamDevice>} */
+        this.devices = new Map();
+        this.ble = null;
+        this._ecoInitTimer = null;
+        this._ecoUnloaded = false;
+        this._ecoDefs = [];
+        this._ecoOptions = null;
+        this._ecoUserId = '';
         this.on('ready', this.onReady.bind(this));
         this.on('stateChange', this.onStateChange.bind(this));
         this.on('message', this.onMessage.bind(this));
         this.on('unload', this.onUnload.bind(this));
     }
 
-    /** Schreibt geänderte Werte nacheinander in den Namensraum der Instanz (ecoflow-gruppen.<N>). */
-    write(id, val) {
-        this.queue = this.queue
-            .then(async () => {
-                if (this.cache.get(id) === val) return;
-                this.cache.set(id, val);
-                await this.setStateAsync(id, { val, ack: true });
-            })
-            .catch((e) => this.log.error(`Schreiben von ${id} fehlgeschlagen: ${e.message}`));
-        return this.queue;
+    // ---------------------------------------------------------------- Start
+    async onReady() {
+        await this.setStateAsync('info.connection', false, true);
+        await this._ecoState('info.userId', {
+            name: 'Ermittelte EcoFlow User-ID',
+            type: 'string',
+            role: 'text',
+        });
+        const cfg = this.config;
+
+        this._ecoDefs = this._ecoValidateDevices(cfg.devices);
+        if (!this._ecoDefs.length) {
+            this.log.error('Kein gueltiges, aktives Geraet konfiguriert (Geraete-ID, Seriennummer, BLE-MAC).');
+            return;
+        }
+
+        this._ecoOptions = {
+            minWatts: num(cfg.minWatts, 0),
+            maxWatts: num(cfg.maxWatts, 800),
+            startWatts: num(cfg.startWatts, 0),
+            toleranceW: num(cfg.toleranceW, 5),
+            writeGraceMs: num(cfg.writeGraceS, 6) * 1000,
+            telemetryMs: Math.max(1, num(cfg.telemetryS, 3)) * 1000,
+            retryMs: Math.max(2, num(cfg.retryS, 8)) * 1000,
+            allSensors: !!cfg.allSensors,
+            holdSetpoint: !!cfg.holdSetpoint,
+        };
+        if (this._ecoOptions.maxWatts < this._ecoOptions.minWatts) {
+            this.log.warn('Maximalleistung < Minimalleistung - verwende 0..800 W');
+            this._ecoOptions.minWatts = 0;
+            this._ecoOptions.maxWatts = 800;
+        }
+
+        const hci = String(cfg.hciDevice === undefined || cfg.hciDevice === null ? '' : cfg.hciDevice).trim();
+        const hciDevice = /^\d+$/.test(hci) ? Number(hci) : null;
+        if (hciDevice !== null) {
+            this.log.info(`Verwende Bluetooth-Adapter hci${hciDevice}`);
+        }
+        this.ble = new BleManager({ hciDevice });
+        for (const d of this._ecoDefs) {
+            await this._ecoCreateObjects(d, this._ecoOptions);
+        }
+        this.subscribeStates('*.control.*');
+
+        // Eine im Feld eingetragene User-ID hat Vorrang; sonst die per "User-ID abrufen" gespeicherte
+        const manual = String(cfg.userId || '').trim();
+        const stored = manual ? null : await this.getStateAsync('info.userId');
+        const userId = manual || (stored && stored.val ? String(stored.val) : '');
+        if (!userId) {
+            this.log.warn('Noch keine EcoFlow User-ID vorhanden. In den Instanz-Einstellungen unter "EcoFlow-Konto" "User-ID abrufen" ausfuehren oder die ID eintragen.');
+            return;
+        }
+        this._ecoUserId = userId;
+        await this._ecoStartDevices();
+        await this._ecoSyncUserIdToConfig(manual, userId);
     }
 
-    /** Legt Kanäle und Datenpunkte an, passt Schreibrechte an und entfernt Altlasten. */
-    async ensureStructure(model, prune) {
-        const expected = new Set(['info', 'info.connection']);
-        for (const ch of model.channels) {
-            expected.add(ch.id);
-            await this.extendObjectAsync(ch.id, { type: 'channel', common: { name: ch.name }, native: {} });
+    /**
+     * Eine per "User-ID abrufen" ermittelte ID einmalig in die Instanzeinstellungen uebernehmen,
+     * damit sie dort angezeigt wird (loest einmalig einen Neustart der Instanz aus).
+     *
+     * @param {string} manual aktuell eingetragene User-ID
+     * @param {string} userId verwendete User-ID
+     */
+    async _ecoSyncUserIdToConfig(manual, userId) {
+        if (manual || !userId || typeof this.extendForeignObjectAsync !== 'function') {
+            return;
         }
-        for (const st of model.states) {
-            expected.add(st.id);
-            await this.extendObjectAsync(st.id, { type: 'state', common: st.common, native: {} });
-            const cur = await this.getStateAsync(st.id);
-            if (!cur || cur.val === null) await this.setStateAsync(st.id, { val: st.common.def, ack: true });
+        try {
+            await this.extendForeignObjectAsync(`system.adapter.${this.namespace}`, { native: { userId } });
+        } catch (e) {
+            this.log.debug(`User-ID konnte nicht in die Einstellungen uebernommen werden: ${e.message}`);
         }
-        if (prune) {
-            const all = await this.getAdapterObjectsAsync();
-            for (const full of Object.keys(all)) {
-                const rel = full.slice(this.namespace.length + 1);
-                if (rel && !expected.has(rel) && !rel.startsWith('info.')) {
-                    await this.delObjectAsync(rel);
-                    this.log.info(`Veralteten Datenpunkt entfernt: ${rel}`);
-                }
-            }
-        }
-        for (const [group, list] of Object.entries(model.groups)) await this.setStateChangedAsync(`${group}.info.Count`, { val: list.length, ack: true });
     }
 
-    /** Abonnement-Muster je Gerät und Quell-Instanz: <adapter>.<seriennummer>.* */
-    sourcePatterns(cfg) {
+    /** (Neu-)Aufbau der Geraete mit der aktuellen User-ID */
+    async _ecoStartDevices() {
+        if (this._ecoUnloaded) {
+            return;
+        }
+        if (this._ecoInitTimer) {
+            clearTimeout(this._ecoInitTimer);
+            this._ecoInitTimer = null;
+        }
+        await Promise.all([...this.devices.values()].map(d => d.stop()));
+        this.devices.clear();
+        for (const d of this._ecoDefs) {
+            const dev = new PowerStreamDevice({
+                id: d.id,
+                sn: d.sn,
+                mac: d.mac,
+                userId: this._ecoUserId,
+                ble: this.ble,
+                options: this._ecoOptions,
+                log: this.log,
+            });
+            dev.on('update', (id, val, force) => void this._ecoOnDeviceUpdate(d.id, id, val, force));
+            this.devices.set(d.id, dev);
+        }
+        await this._ecoInitBleAndStart();
+    }
+
+    /** Bluetooth bereit machen; bei Fehlern regelmaessig neu versuchen (Dongle evtl. spaeter da) */
+    async _ecoInitBleAndStart(attempt = 0) {
+        if (this._ecoUnloaded) {
+            return;
+        }
+        try {
+            await this.ble.init();
+        } catch (e) {
+            (attempt === 0 ? this.log.error : this.log.debug).call(this.log, `Bluetooth nicht verfuegbar: ${e.message} (neuer Versuch in 30 s)`);
+            this._ecoInitTimer = setTimeout(() => void this._ecoInitBleAndStart(attempt + 1), 30000);
+            return;
+        }
+        this.log.info(`Bluetooth bereit (Bibliothek ${this.ble.libName}) - starte ${this.devices.size} Geraet(e)`);
+        for (const dev of this.devices.values()) {
+            dev.start();
+        }
+    }
+
+    _ecoValidateDevices(list) {
         const out = [];
-        for (const a of cfg.adapters) {
-            for (const d of cfg.devices) for (const s of new Set([d.serial, d.up])) out.push(`${a}.${s}.*`);
+        const seen = new Set();
+        for (const raw of Array.isArray(list) ? list : []) {
+            if (!raw || raw.enabled === false) {
+                continue;
+            }
+            const id = String(raw.id || '').trim();
+            const sn = String(raw.sn || '').trim();
+            const mac = String(raw.mac || '')
+                .trim()
+                .toLowerCase()
+                .replace(/-/g, ':');
+            if (!ID_RE.test(id)) {
+                this.log.error(`Geraete-ID "${id}" ungueltig (erlaubt: Buchstaben, Ziffern, _ und -)`);
+                continue;
+            }
+            if (seen.has(id)) {
+                this.log.error(`Geraete-ID "${id}" doppelt vergeben`);
+                continue;
+            }
+            if (!sn) {
+                this.log.error(`[${id}] Seriennummer fehlt`);
+                continue;
+            }
+            if (!MAC_RE.test(mac)) {
+                this.log.error(`[${id}] BLE-MAC "${raw.mac}" ungueltig (Format aa:bb:cc:dd:ee:ff)`);
+                continue;
+            }
+            seen.add(id);
+            out.push({ id, sn, mac });
         }
         return out;
     }
 
-    async onReady() {
-        await this.setStateAsync('info.connection', false, true);
-        const { cfg, errors } = normalizeConfig(this.config, this.log);
-        this.cfg = cfg;
-        if (errors.length) {
-            for (const e of errors) this.log.error(e);
-            this.log.error('Konfiguration fehlerhaft – Adapter bleibt inaktiv. Bitte in der Instanz korrigieren');
-            return;
-        }
-        if (!cfg.devices.length) this.log.warn('Keine gültigen Geräte konfiguriert – bitte die Gerätetabelle in der Instanz ausfüllen');
-        const model = buildModel(cfg.devices);
-        await this.ensureStructure(model, cfg.pruneOnStart);
+    // ---------------------------------------------------------------- Objekte
+    async _ecoState(id, common) {
+        await this.extendObjectAsync(id, {
+            type: 'state',
+            common: { read: true, write: false, ...common },
+            native: {},
+        });
+    }
 
-        this.core = new EcoflowCore({
-            cfg,
-            log: this.log,
-            io: {
-                write: (id, val) => this.write(id, val),
-                invalidate: (id) => this.cache.delete(id),
-                setSource: (id, val) => this.setForeignStateAsync(id, { val, ack: false }),
-                isWritable: async (id) => {
-                    const o = await this.getForeignObjectAsync(id);
-                    return !!(o && o.common && o.common.write === true);
-                },
-            },
+    async _ecoCreateObjects(d, options) {
+        const base = d.id;
+        await this.extendObjectAsync(base, {
+            type: 'device',
+            common: { name: `PowerStream ${d.id}` },
+            native: { sn: d.sn, mac: d.mac },
+        });
+        for (const [ch, name] of [
+            ['control', 'Steuerung'],
+            [HB_CHANNEL, 'Messwerte (inverter_heartbeat)'],
+            ['info', 'Verbindung / Diagnose'],
+        ]) {
+            await this.extendObjectAsync(`${base}.${ch}`, { type: 'channel', common: { name }, native: {} });
+        }
+
+        // --- Steuerung ---
+        await this._ecoState(`${base}.control.reconnect`, {
+            name: 'BLE-Verbindung neu aufbauen',
+            type: 'boolean',
+            role: 'button',
+            read: false,
+            write: true,
+            def: false,
         });
 
-        for (const rel of this.core.targets.keys()) this.subscribeStates(rel);
-        const pats = this.sourcePatterns(cfg);
-        for (const p of pats) this.subscribeForeignStates(p);
+        // --- Messwerte ---
+        for (const s of SENSORS) {
+            if (s.hidden && !options.allSensors) {
+                continue;
+            }
+            const common = {
+                name: s.name,
+                type: s.kind === 'bool' ? 'boolean' : 'number',
+                role: s.role,
+            };
+            if (s.unit) {
+                common.unit = s.unit;
+            }
+            if (s.writable) {
+                // Schreibbare Werte liegen wie bei ioBroker.ecoflow-mqtt direkt im inverter_heartbeat
+                common.write = true;
+                if (s.key === 'permanentWatts') {
+                    Object.assign(common, { min: options.minWatts, max: options.maxWatts, step: 5 });
+                } else if (s.key === 'invBrightness') {
+                    Object.assign(common, { min: 0, max: 100, step: 0.1 });
+                }
+            }
+            await this._ecoState(`${base}.${HB_CHANNEL}.${s.key}`, common);
+        }
 
-        let count = 0;
-        for (const p of pats) {
-            const objs = (await this.getForeignObjectsAsync(p, 'state')) || {};
-            for (const [id, obj] of Object.entries(objs)) {
-                if (!this.core.parseId(id)) continue;
-                this.core.addCandidate(id, !!(obj.common && obj.common.write === true));
-                await this.core.handle(id, await this.getForeignStateAsync(id));
-                count++;
+        // Fruehere Steuer-Datenpunkte (jetzt in inverter_heartbeat) entfernen
+        for (const old of ['setWatts', 'brightness', 'supplyMode']) {
+            try {
+                await this.delObjectAsync(`${base}.control.${old}`);
+            } catch {
+                /* existiert nicht */
             }
         }
-        this.log.info(`Initial-Sync: ${count} Quell-Datenpunkte übernommen`);
-        const missing = this.core.missingDevices();
-        if (missing.length) this.log.warn(`Keine passenden Quell-Datenpunkte gefunden für: ${missing.map((d) => d.serial).join(', ')}. Seriennummer und Datenpunktnamen (permanentWatts, invOutputWatts) prüfen`);
+        // Aelteres Channel "telemetry" (bis zur Umbenennung in inverter_heartbeat) entfernen
+        try {
+            await this.delObjectAsync(`${base}.telemetry`, { recursive: true });
+        } catch {
+            /* existiert nicht */
+        }
 
-        if (cfg.staleTimeoutSec > 0) this.staleTimer = setInterval(() => this.core.checkStale().catch((e) => this.log.error(e.message)), 30000);
-        this.log.info(`Adapter gestartet (Quelle: ${cfg.adapters.join(', ')}), Datenpunkte unter ${this.namespace}.*`);
+        // --- Diagnose ---
+        if (options.allSensors) {
+            await this._ecoState(`${base}.info.unknownFields`, {
+                name: 'Nicht zugeordnete Heartbeat-Felder (Feldnummer: Rohwert)',
+                type: 'string',
+                role: 'json',
+            });
+        }
+        await this._ecoState(`${base}.info.link`, { name: 'BLE verbunden und angemeldet', type: 'boolean', role: 'indicator.reachable' });
+        await this._ecoState(`${base}.info.status`, { name: 'Verbindungsstatus', type: 'string', role: 'text' });
+        await this._ecoState(`${base}.info.bleRssi`, { name: 'BLE RSSI', type: 'number', role: 'value.rssi', unit: 'dBm' });
+        await this._ecoState(`${base}.info.bleReconnects`, { name: 'BLE Verbindungen seit Start', type: 'number', role: 'value' });
+        await this._ecoState(`${base}.info.lastDisconnect`, { name: 'Letzter Trennungsgrund', type: 'string', role: 'text' });
+        await this._ecoState(`${base}.info.lastUpdate`, { name: 'Letzte Messwert-Aktualisierung', type: 'number', role: 'value.time' });
     }
 
-    onStateChange(id, state) {
-        if (!this.core || !state) return;
-        const prefix = `${this.namespace}.`;
-        if (id.startsWith(prefix)) {
-            const rel = id.slice(prefix.length);
-            if (state.ack === false && this.core.targets.has(rel)) {
-                this.core.writeBack(rel, state).catch((e) => this.log.error(`Schreiben von ${rel}: ${e.message}`));
+    // ---------------------------------------------------------------- Geraet -> States
+    async _ecoOnDeviceUpdate(devId, id, val, force = false) {
+        if (this._ecoUnloaded) {
+            return;
+        }
+        const full = `${devId}.${id}`;
+        try {
+            if (force || id.startsWith('control.')) {
+                await this.setStateAsync(full, { val, ack: true });
+            } else {
+                await this.setStateChangedAsync(full, { val, ack: true });
+            }
+            if (id === 'info.link') {
+                const any = [...this.devices.values()].some(d => d.linked);
+                await this.setStateChangedAsync('info.connection', { val: any, ack: true });
+            }
+        } catch (e) {
+            this.log.debug(`State ${full} nicht gesetzt: ${e.message}`);
+        }
+    }
+
+    // ---------------------------------------------------------------- States -> Geraet
+    async onStateChange(id, state) {
+        if (!state || state.ack) {
+            return;
+        }
+        const parts = id.slice(this.namespace.length + 1).split('.');
+        if (parts.length !== 3 || (parts[1] !== 'control' && parts[1] !== HB_CHANNEL)) {
+            return;
+        }
+        const dev = this.devices.get(parts[0]);
+        if (!dev) {
+            return;
+        }
+        const val = Number(state.val);
+        switch (parts[2]) {
+            case 'permanentWatts':
+                if (Number.isFinite(val)) {
+                    dev.setTarget(val);
+                } else {
+                    this.log.warn(`[${parts[0]}] ungueltiger Sollwert: ${state.val}`);
+                }
+                break;
+            case 'invBrightness':
+                if (Number.isFinite(val)) {
+                    dev.setBrightness(val);
+                }
+                break;
+            case 'supplyPriority':
+                dev.setSupplyMode(state.val === true || state.val === 'true' || val === 1);
+                break;
+            case 'reconnect':
+                if (state.val === true || state.val === 'true' || val === 1) {
+                    dev.reconnect();
+                }
+                await this.setStateAsync(id, { val: false, ack: true });
+                break;
+            default:
+                break;
+        }
+    }
+
+    // ---------------------------------------------------------------- Admin-Nachrichten
+    /**
+     * Admin -> Adapter: "getUserId". Meldet sich mit den uebergebenen EcoFlow-Zugangsdaten an
+     * und liefert die User-ID zurueck. Zugangsdaten werden weder gespeichert noch geloggt.
+     *
+     * @param {ioBroker.Message} obj
+     */
+    async onMessage(obj) {
+        if (obj && obj.command === 'listAdapters') {
+            // Auswahlliste fuer die Einstellung "Bluetooth-Adapter"
+            const adapters = await listAdapters();
+            const options = [{ value: '', label: 'Automatisch (Standardadapter)' }];
+            for (const a of adapters) {
+                const extra = [a.address, a.bus].filter(Boolean).join(', ');
+                options.push({ value: String(a.id), label: extra ? `${a.name} (${extra})` : a.name });
+            }
+            if (obj.callback) {
+                this.sendTo(obj.from, obj.command, options, obj.callback);
             }
             return;
         }
-        this.core.handle(id, state).catch((e) => this.log.error(`Fehler bei ${id}: ${e.message}`));
-    }
-
-    /** Nachrichten der Admin-Oberfläche: JSON-Export/-Import und Geräte-Suche. */
-    async onMessage(obj) {
-        if (!obj || !obj.command || !obj.callback) return;
-        let reply;
-        try {
-            const msg = obj.message || {};
-            if (obj.command === 'exportConfig') reply = configio.exportConfig(msg.config);
-            else if (obj.command === 'importConfig') reply = configio.importConfig(msg.json);
-            else if (obj.command === 'discoverDevices') {
-                const c = msg.config || {};
-                const { cfg } = normalizeConfig(c);
-                const ids = [];
-                for (const a of cfg.adapters) ids.push(...Object.keys((await this.getForeignObjectsAsync(`${a}.*`, 'state')) || {}));
-                const serials = serialsFromIds(ids, cfg.adapters);
-                const { rows, added } = mergeSerials(c.devices, serials);
-                reply = {
-                    native: { devices: rows },
-                    result: serials.size
-                        ? `${serials.size} Gerät(e) gefunden, ${added.length} neu in die Tabelle übernommen. Bei neuen Zeilen die Gruppe eintragen (Zeilen ohne Gruppe werden ignoriert), danach „Speichern und schließen“ drücken.`
-                        : `In ${cfg.adapters.join(', ')} wurden keine Geräte gefunden.`,
-                };
-            } else return;
-        } catch (e) {
-            reply = { error: `Fehler: ${e.message}` };
+        if (!obj || obj.command !== 'getUserId') {
+            return;
         }
-        this.sendTo(obj.from, obj.command, reply, obj.callback);
+        const m = obj.message || {};
+        let response;
+        try {
+            // Felder aus dem (ungespeicherten) Formular; sind sie leer, gelten die gespeicherten Zugangsdaten
+            const cfg = this.config || {};
+            const clean = v => (typeof v === 'string' && /\$\{[^}]*\}/.test(v) ? '' : v);
+            const userId = await fetchUserId({
+                identifier: clean(m.email) || cfg.loginEmail,
+                password: clean(m.password) || cfg.loginPassword,
+                region: clean(m.region) || cfg.loginRegion || 'auto',
+            });
+            this.log.info('EcoFlow User-ID erfolgreich ermittelt');
+            // Dauerhaft im Adapter speichern - unabhaengig davon, ob das Formularfeld im Admin aktualisiert wird
+            await this.setStateAsync('info.userId', { val: userId, ack: true });
+            let text = `User-ID ${userId} ermittelt und gespeichert.`;
+            const manual = String((this.config && this.config.userId) || '').trim();
+            if (manual && manual !== userId) {
+                text += ' Achtung: Die im Feld eingetragene, abweichende User-ID hat nach einem Neustart Vorrang.';
+            }
+            response = { result: text, native: { userId } };
+            if (userId !== this._ecoUserId) {
+                this._ecoUserId = userId;
+                if (this._ecoDefs && this._ecoDefs.length) {
+                    // erst antworten, dann (neu) starten
+                    setTimeout(() => void this._ecoStartDevices().catch(e => this.log.warn(`Start fehlgeschlagen: ${e.message}`)), 0);
+                }
+            }
+        } catch (e) {
+            if (!(e instanceof LoginError)) {
+                this.log.warn(`User-ID-Abfrage fehlgeschlagen: ${e.message}`);
+            }
+            response = { error: e.message };
+        }
+        if (obj.callback) {
+            this.sendTo(obj.from, obj.command, response, obj.callback);
+        }
     }
 
-    onUnload(callback) {
+    // ---------------------------------------------------------------- Ende
+    async onUnload(callback) {
+        this._ecoUnloaded = true;
         try {
-            if (this.staleTimer) clearInterval(this.staleTimer);
-            this.setState('info.connection', false, true);
+            if (this._ecoInitTimer) {
+                clearTimeout(this._ecoInitTimer);
+            }
+            await Promise.all([...this.devices.values()].map(d => d.stop()));
+            if (this.ble) {
+                await this.ble.shutdown();
+            }
+            await this.setStateAsync('info.connection', false, true);
+        } catch (e) {
+            this.log.debug(`Fehler beim Beenden: ${e.message}`);
         } finally {
             callback();
         }
     }
 }
 
-if (require.main !== module) module.exports = (options) => new EcoflowGruppen(options);
-else new EcoflowGruppen();
+function num(v, def) {
+    const n = Number(v);
+    return v === '' || v === null || v === undefined || !Number.isFinite(n) ? def : n;
+}
+
+if (require.main !== module) {
+    /** @param {Partial<utils.AdapterOptions>} [options] */
+    module.exports = options => new EcoflowPsBle(options);
+} else {
+    new EcoflowPsBle();
+}
