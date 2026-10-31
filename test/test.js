@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const { normalizeConfig, buildModel, mergeSerials, serialsFromIds, DEFAULTS } = require('../lib/model');
+const { normalizeConfig, buildModel, mergeSerials, serialsFromIds, sourceKeysFromIds, DEFAULTS } = require('../lib/model');
 const { EcoflowCore } = require('../lib/core');
 const { exportConfig, importConfig } = require('../lib/configio');
 
@@ -210,6 +210,65 @@ function mk(over = {}) {
         assert.ok(importConfig('{"config":{"sourceAdapters":"ecoflow"}}').error);
         assert.ok(importConfig('{"config":{"powerScale":0}}').error);
         assert.ok(importConfig('x'.repeat(200001)).error);
+    });
+    await test('Geräte-ID der Quelle (ecoflow-ps-ble): Konfiguration und Eindeutigkeit', () => {
+        logs.warn.length = 0;
+        const r = normalizeConfig({ sourceAdapters: 'ecoflow-ps-ble.0', devices: [
+            { group: 'haus', serial: '', sourceId: 'PS1' },               // nur Geräte-ID
+            { group: 'haus', serial: S2, sourceId: 'PS2' },               // beides
+            { group: 'haus', serial: '', sourceId: 'ps1' },               // doppelt (ohne Groß-/Kleinschreibung)
+            { group: 'haus', serial: S3, sourceId: 'PS2' },               // Geräte-ID doppelt
+            { group: 'haus', serial: '', sourceId: 'a b' },               // ungültig
+            { group: 'haus', serial: '', sourceId: 'info' },              // reserviert
+            { group: 'haus', serial: '', sourceId: '' },                  // weder noch
+        ] }, log);
+        assert.deepStrictEqual(r.errors, []);
+        assert.deepStrictEqual(r.cfg.devices.map((d) => `${d.name}:${d.serial}|${d.sourceId}`), ['WR1:|PS1', `WR2:${S2}|PS2`]);
+        assert.strictEqual(logs.warn.length, 5);
+        const m = buildModel(r.cfg.devices);
+        assert.strictEqual(m.channels.find((c) => c.id === 'haus.WR1').name, 'WR1 (PS1)');
+        assert.strictEqual(m.channels.find((c) => c.id === 'haus.WR2').name, `WR2 (${S2})`);
+    });
+    await test('Geräte-ID der Quelle: Spiegeln und Rückweg über ps-ble-IDs', async () => {
+        const { w, sets, writable, core } = mk({ sourceAdapters: 'ecoflow-ps-ble.0', devices: [{ group: 'haus', serial: S1, sourceId: 'PS1' }, { group: 'haus', serial: '', sourceId: 'PS2' }] });
+        const ID = (dev, metric) => `ecoflow-ps-ble.0.${dev}.inverter_heartbeat.${metric}`;
+        writable[ID('PS1', 'permanentWatts')] = true;
+        // Zuordnung über Geräte-ID (auch groß/klein) und über Seriennummer
+        assert.strictEqual(core.parseId(ID('PS1', 'invOutputWatts')).device.name, 'WR1');
+        assert.strictEqual(core.parseId(ID('ps2', 'invOutputWatts')).device.name, 'WR2');
+        assert.strictEqual(core.parseId(ID(S1, 'permanentWatts')).device.name, 'WR1');
+        assert.strictEqual(core.parseId(ID('PS3', 'invOutputWatts')), null);
+        assert.strictEqual(core.parseId('ecoflow-mqtt.0.PS1.inverter_heartbeat.invOutputWatts'), null);
+        // Spiegeln und Summe
+        await core.handle(ID('PS1', 'invOutputWatts'), { val: 120 });
+        await core.handle(ID('PS2', 'invOutputWatts'), { val: 80.5 });
+        await core.handle(ID('PS1', 'permanentWatts'), { val: 200 });
+        assert.strictEqual(w['haus.WR1.InvOutputWatts'], 120);
+        assert.strictEqual(w['haus.WR2.InvOutputWatts'], 80.5);
+        assert.strictEqual(w['haus.info.Total_Power'], 200.5);
+        assert.strictEqual(w['haus.WR1.Power'], 200);
+        // Rückweg: ack=false auf WR1.Power geht an PS1.permanentWatts (writable laut mk-Quelle)
+        await core.handle(ID('PS2', 'permanentWatts'), { val: 0 });
+        assert.deepStrictEqual(core.missingDevices(), []);
+        assert.strictEqual(await core.writeBack('haus.WR1.Power', { val: 350, ack: false }), 'ok');
+        assert.strictEqual(sets[sets.length - 1][0], ID('PS1', 'permanentWatts'));
+        assert.strictEqual(sets[sets.length - 1][1], 350);
+        // ack=true (eigene Rückmeldung) wird ignoriert
+        assert.strictEqual(await core.writeBack('haus.WR1.Power', { val: 360, ack: true }), 'ignored');
+    });
+    await test('Geräte-ID der Quelle: Suche, Tabelle und Export/Import', () => {
+        const ids = ['ecoflow-ps-ble.0.PS1.inverter_heartbeat.permanentWatts', 'ecoflow-ps-ble.0.PS2.inverter_heartbeat.invOutputWatts',
+            'ecoflow-ps-ble.0.PS1.info.link', 'ecoflow-ps-ble.0.info.connection', `ecoflow-ps-ble.0.${S1}.inverter_heartbeat.x`, 'ecoflow-ps-ble.1.PS9.inverter_heartbeat.permanentWatts'];
+        const keys = sourceKeysFromIds(ids, ['ecoflow-ps-ble.0']);
+        assert.deepStrictEqual([...keys].sort(), ['PS1', 'PS2', S1].sort());
+        assert.deepStrictEqual([...serialsFromIds(ids, ['ecoflow-ps-ble.0'])], [S1]); // altes Verhalten bleibt
+        const r = mergeSerials([{ group: 'haus', serial: S1, sourceId: 'PS1' }], keys);
+        assert.deepStrictEqual(r.added, ['PS2']);
+        assert.deepStrictEqual(r.rows[1], { group: '', serial: '', sourceId: 'PS2' });
+        const native = { sourceAdapters: 'ecoflow-ps-ble.0', devices: [{ group: 'haus', serial: '', sourceId: 'PS1' }, { group: 'haus', serial: S2 }] };
+        const parsed = JSON.parse(exportConfig(native).native.configJson);
+        assert.deepStrictEqual(parsed.config.devices, [{ group: 'haus', serial: '', sourceId: 'PS1' }, { group: 'haus', serial: S2 }]);
+        assert.deepStrictEqual(importConfig(JSON.stringify(parsed)).native.devices, parsed.config.devices);
     });
     await test('io-package.json: Standardwerte passen zum Modell', () => {
         const io = require('../io-package.json');
