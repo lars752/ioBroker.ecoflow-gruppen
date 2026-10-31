@@ -1,30 +1,21 @@
-Copyright (c) Just-Zuul 05/2026
+MIT License
 
-Private, non-commercial use only.
+Copyright (c) 2026 Lars
 
-Permission is granted for private, non-commercial use and modification.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-The following are strictly prohibited:
-- Commercial use of any kind
-- Resale or distribution for profit
-- Integration into commercial products or services
-- Sale of hardware pre-flashed with this firmware
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-If you share modifications for non-commercial purposes, credit the
-original author and link to this repository.
-
-This software is provided "as is", without any warranty.
-
--------------------------------------------------------------------------------
-Hinweis zu diesem Projekt (ioBroker.ecoflow-ps-ble)
-
-Dieses Projekt ist eine Ableitung von
-  "Local-MQTT-EcoFlow-PowerStream-BLE-Bridge" (c) Just-Zuul 05/2026
-  https://github.com/Just-Zuul/Local-MQTT-EcoFlow-PowerStream-BLE-Bridge
-(Portierung des BLE-Teils der ESP32-Firmware nach Node.js/ioBroker).
-Es unterliegt daher denselben Bedingungen: ausschliesslich private,
-nicht-kommerzielle Nutzung; Weitergabe von Aenderungen nur nicht-kommerziell
-unter Nennung des Originalautors und Verlinkung des Original-Repositories.
-
-Die zugrunde liegende Protokoll-Analyse stammt von rabits/ha-ef-ble
-(https://github.com/rabits/ha-ef-ble); deren Lizenz ist separat zu beachten.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

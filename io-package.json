@@ -1,112 +1,98 @@
 {
-  "common": {
-    "name": "ecoflow-ps-ble",
-    "version": "1.0.0",
-    "news": {
-      "1.0.0": {
-        "en": "initial release",
-        "de": "Erstveröffentlichung"
-      }
-    },
-    "titleLang": {
-      "en": "EcoFlow PowerStream (BLE)",
-      "de": "EcoFlow PowerStream (BLE)"
-    },
-    "desc": {
-      "en": "Local, cloud-free control and monitoring of the EcoFlow PowerStream (HW51) via Bluetooth LE",
-      "de": "Lokale, cloudfreie Steuerung und Überwachung des EcoFlow PowerStream (HW51) per Bluetooth LE"
-    },
-    "authors": [
-      "lars752"
-    ],
-    "keywords": [
-      "ecoflow",
-      "powerstream",
-      "ble",
-      "bluetooth",
-      "zero feed-in"
-    ],
-    "licenseInformation": {
-      "type": "free",
-      "license": "SEE LICENSE IN LICENSE"
-    },
-    "platform": "Javascript/Node.js",
-    "icon": "ecoflow-ps-ble.svg",
-    "enabled": true,
-    "mode": "daemon",
-    "compact": false,
-    "type": "energy",
-    "connectionType": "local",
-    "dataSource": "push",
-    "adminUI": {
-      "config": "json"
-    },
-    "tier": 2,
-    "loglevel": "info",
-    "dependencies": [
-      {
-        "js-controller": ">=5.0.19"
-      }
-    ],
-    "globalDependencies": [
-      {
-        "admin": ">=6.0.0"
-      }
-    ],
-    "messagebox": true,
-    "encryptedNative": [
-      "loginPassword"
-    ],
-    "protectedNative": [
-      "loginPassword"
-    ]
-  },
-  "native": {
-    "userId": "",
-    "loginEmail": "",
-    "loginPassword": "",
-    "loginRegion": "auto",
-    "devices": [
-      {
+    "common": {
+        "name": "ecoflow-gruppen",
+        "version": "1.1.0",
+        "news": {
+            "1.1.0": {
+                "en": "Devices can also be matched by the device ID of the source instance (e.g. ecoflow-ps-ble), serial number is optional then",
+                "de": "Geräte lassen sich auch über die Geräte-ID der Quell-Instanz zuordnen (z. B. ecoflow-ps-ble), die Seriennummer ist dann optional"
+            },
+            "1.0.0": {
+                "en": "Initial release",
+                "de": "Erstveröffentlichung"
+            }
+        },
+        "titleLang": {
+            "en": "Ecoflow groups",
+            "de": "Ecoflow Gruppen"
+        },
+        "desc": {
+            "en": "Assigns Ecoflow devices to groups by serial number, mirrors setpoint and output power and provides per-group total power",
+            "de": "Ordnet Ecoflow-Geräte per Seriennummer Gruppen zu, spiegelt Soll- und Ausgangsleistung und stellt pro Gruppe die Gesamtleistung bereit"
+        },
+        "authors": [
+            "Lars"
+        ],
+        "keywords": [
+            "ecoflow",
+            "group",
+            "inverter",
+            "power"
+        ],
+        "license": "MIT",
+        "platform": "Javascript/Node.js",
+        "main": "main.js",
+        "icon": "ecoflow-gruppen.png",
         "enabled": true,
-        "id": "PS1",
-        "sn": "",
-        "mac": ""
-      }
-    ],
-    "minWatts": 0,
-    "maxWatts": 800,
-    "startWatts": 0,
-    "holdSetpoint": false,
-    "toleranceW": 5,
-    "writeGraceS": 6,
-    "telemetryS": 3,
-    "retryS": 8,
-    "allSensors": false,
-    "hciDevice": ""
-  },
-  "objects": [],
-  "instanceObjects": [
-    {
-      "_id": "info",
-      "type": "channel",
-      "common": {
-        "name": "Information"
-      },
-      "native": {}
+        "extIcon": "https://raw.githubusercontent.com/lars752/ioBroker.ecoflow-gruppen/main/admin/ecoflow-gruppen.png",
+        "readme": "https://github.com/lars752/ioBroker.ecoflow-gruppen/blob/main/README.md",
+        "loglevel": "info",
+        "mode": "daemon",
+        "type": "energy",
+        "compact": false,
+        "connectionType": "local",
+        "dataSource": "push",
+        "messagebox": true,
+        "supportedMessages": {
+            "custom": true
+        },
+        "adminUI": {
+            "config": "json"
+        },
+        "dependencies": [
+            {
+                "js-controller": ">=5.0.19"
+            }
+        ],
+        "globalDependencies": [
+            {
+                "admin": ">=6.12.2"
+            }
+        ]
     },
-    {
-      "_id": "info.connection",
-      "type": "state",
-      "common": {
-        "role": "indicator.connected",
-        "name": "Mindestens ein PowerStream verbunden",
-        "type": "boolean",
-        "read": true,
-        "write": false,
-        "def": false
-      },
-      "native": {}
-    }
-  ]
+    "native": {
+        "sourceAdapters": "ecoflow-mqtt.0",
+        "staleTimeoutSec": 0,
+        "pruneOnStart": true,
+        "powerScale": 1,
+        "outputScale": 1,
+        "maxPowerW": 800,
+        "logWrites": false,
+        "devices": [],
+        "configJson": ""
+    },
+    "objects": [],
+    "instanceObjects": [
+        {
+            "_id": "info",
+            "type": "channel",
+            "common": {
+                "name": "Information"
+            },
+            "native": {}
+        },
+        {
+            "_id": "info.connection",
+            "type": "state",
+            "common": {
+                "role": "indicator.connected",
+                "name": "Mindestens ein Gerät liefert aktuelle Daten",
+                "type": "boolean",
+                "read": true,
+                "write": false,
+                "def": false
+            },
+            "native": {}
+        }
+    ]
 }
